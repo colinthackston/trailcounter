@@ -1,0 +1,47 @@
+Lab 3 Markdown
+Artur Lukin
+avlukin
+
+gyro:
+For gyro I used the same commands from the last lab to check for the arguments and match them to read or write or read all. To convert the string from the arguments to hex I used strtol to do that. If you read from the gyro you enter the register and it reads from it. To write to a register you give it an address and a value.
+
+press:
+For pressure readings, first I had to find a way to convert an integer to a hex value to read all of the registers in the r all command. I created a new function that I found online, which does the conversion. Before reading a pressure register, I had to write to the control register first to set the Hz at which the temperature and the pressure readings were taken at and to put the sensor in active mode. I had to wire up the pressure sensor, which I will have a diagram below.
+
+altitude:
+For the altitude command, I had to write to the pressure register first and then take three different readings from the XL, L, and H pressure registers as uint32_t. Then I left shifted the H by 16 and L by 8 and H by 0 and then ored (|) them all together and then divided by 4096. Then I performed the calculation to convert the pressure to altitude  and printed it out depending on if it was in feet or meters.
+
+schematic: uses SPI
+
+
+<code>
+             +-----------------------------+
+             |                             |
+             |                             |      +--------------+
+             |    +--------------------+   +------+VCC           |
+             +---->3V                  |          |     P    MISO+--------------------+
+                  |                    |          |     R    MOSI|------------------+ |
++----------------->PA6(MISO)           |          |     E     SCK|----------------+ | |
+| +--------------->PA7(MOSI)           |          |     S      CS+--------------+ | | |
+| | +------------->PA5(SCK)            |          |     S        |              | | | |
+| | |             |                    |          |     U        |              | | | |
+| | |             |                    |          |     R        |              | | | |
+| | |             |       STM32        |          |     E        |              | | | |
+| | |             |                    |          |           GND+---+          | | | |
+| | |             |                    |          +--------------+   |          | | | |
+| | |             |                    |                             v          | | | |
+| | |             |                    |                                        | | | |
+| | |             |                    |                                        | | | |
+| | |             |                    |                                        | | | |
+| | |             |                    |                                        | | | |
+| | |             |             (CS)PA8<----------------------------------------+ | | |
+| | |             |                    |                                          | | |
+| | |             +--------------------+                                          | | |
+| | |                                                                             | | |
+| | +-----------------------------------------------------------------------------+ | |
+| |                                                                                 | |
+| +---------------------------------------------------------------------------------+ |
+|                                                                                     |
++-------------------------------------------------------------------------------------+
+
+</code>

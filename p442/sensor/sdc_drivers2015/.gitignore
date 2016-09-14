@@ -1,0 +1,33 @@
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Libraries
+*.lib
+*.a
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+
+
+# rlemke added these
+*.o.d
+*.lst
+*.md~
+
+# tm40 added build folder
+sensor_drivers/build/*

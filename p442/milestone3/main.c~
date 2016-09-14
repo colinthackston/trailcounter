@@ -1,0 +1,226 @@
+#include "ch.h"
+#include "hal.h"
+#include "test.h"
+#include "shell.h" 
+#include "chprintf.h"
+#include <chstreams.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
+
+// Lets configure our ADC first
+
+static THD_WORKING_AREA(waShell,2048);
+static thread_t *shelltp1;
+int j;
+float amperage[5000];
+// ADCConfig structure for stm32 MCUs is empty
+static ADCConfig adccfg = {0};
+#define UNUSED(x) (void)(x)
+
+// Create buffer to store ADC results. This is
+// one-dimensional interleaved array
+#define ADC_BUF_DEPTH 2 // depth of buffer
+#define ADC_CH_NUM 2    // number of used ADC channels
+static adcsample_t samples_buf[ADC_BUF_DEPTH * ADC_CH_NUM]; // results array
+
+// Fill ADCConversionGroup structure fields
+static const ADCConversionGroup adcgrpcfg = {
+  FALSE,
+  2,
+  NULL,
+  NULL,
+  0,      /* CFGR */
+  0,      /* TR1 */
+  0,      /* CCR */
+  /* SMPR1 */
+  {ADC_SMPR1_SMP_AN1(ADC_SMPR_SMP_7P5) |
+   ADC_SMPR1_SMP_AN2(ADC_SMPR_SMP_7P5),
+
+   /* SMPR2 */
+   0},
+
+  /* SQR1 */
+  {ADC_SQR1_NUM_CH(2) |
+   ADC_SQR1_SQ1_N(ADC_CHANNEL_IN6) |
+   ADC_SQR1_SQ2_N(ADC_CHANNEL_IN7),
+
+   /* SQR2 */
+   0,
+
+   /* SQR3 */
+   0,
+
+   /* SQR4 */
+   0}
+};
+
+// Thats all with configuration
+
+static void gpt_adc_trigger(void)  {
+  /* char float_array[32]; */
+  /* static unsigned short dac_val = 0;  */
+
+  //EvaluateNet(scale_input(samples_buf[0]));
+     // dacConvertOne(&DACD1,scale_output(outputs[0]));
+
+  /* EvaluateNet(&ann, &inFifo, scale_input(samples_buf[0])); */
+  /* dacConvertOne(&DACD1,scale_output(outputs[0])); */
+
+
+  /* if (dac_val) { */
+  /*   dac_val = 0x000; */
+  /* } */
+  /* else { */
+  /*   dac_val = 0xFFF; */
+  /* } */
+  /* dacConvertOne(&DACD1,dac_val); */
+
+
+
+  /* if (outputs[0] > 0xFFF) { */
+  /*   outputs[0] = 0xFFF; */
+  /* } */
+
+  //  dacConvertOne(&DACD1,outputs[0]);
+  //  dacConvertOne(&DACD1,samples_buf[0]);
+  //  dacConvertOne(&DACD1,0x3ff);
+  adcStartConversion(&ADCD1, &adcgrpcfg, samples_buf, ADC_BUF_DEPTH);
+ palTogglePad(GPIOE, GPIOE_LED4_BLUE);
+}
+
+static GPTConfig gpt_adc_config = {
+  1000000,         // timer clock: 1Mhz
+  gpt_adc_trigger, // Timer callback function
+  0,
+  0
+};
+
+
+/* Thread that blinks North LED as an "alive" indicator */
+static THD_WORKING_AREA(waCounterThread,128);
+static THD_FUNCTION(counterThread,arg) {
+  UNUSED(arg);
+  while (TRUE) {
+    palSetPad(GPIOE, GPIOE_LED3_RED);
+    chThdSleepMilliseconds(500);
+    palClearPad(GPIOE, GPIOE_LED3_RED);
+    chThdSleepMilliseconds(500);
+  }
+}
+
+static THD_WORKING_AREA(waPrinterThread,128);
+static THD_FUNCTION(printerThread,arg) {
+  UNUSED(arg);
+  uint16_t potential_0 = 0;
+  uint16_t potential_1 = 0;
+  float d,f,diff;
+  int front, back;
+  
+  while (TRUE) {
+    for(j=0;j<5000;j++){
+      potential_0 = samples_buf[0];
+      potential_1 = samples_buf[1];
+
+      d = (3.0/4096.0)* potential_0; //converting potential_0 (positive)
+
+ 
+      f = (3.0/4096.0)* potential_1;//converting potential_1 (ground)
+
+      diff = d-f; //difference between voltages
+      diff = diff*100; //milliamps
+      amperage[j]=diff;
+      diff = amperage[j];
+      front = diff;
+      back = (diff-front)*100;
+    
+
+   
+      chprintf((BaseSequentialStream*)&SD1, "%d: %d.%d mA \n\r", j, front, back);
+      chThdSleepMilliseconds(100);
+    }
+  }
+}
+/*
+static void cmd_read(BaseSequentialStream *chp, int argc, char *argv[]) {
+  if(strcmp(argv[0],"start")==0){
+    //start the reading
+  }
+  if(strcmp(argv[0], "stop")==0){
+    //stop the reading
+  }
+}
+
+static void cmd_dump(BaseSequentialStream *chp, int argc, char *argv[]) {
+
+}
+*/
+static const ShellCommand commands[] = {
+  //{"read". cmd_read},
+  //{dump", cmd_dump},
+  {NULL, NULL}
+
+};
+
+static const ShellConfig shell_cfg1 = {
+  (BaseSequentialStream *)&SD1,
+  commands
+};
+
+static void termination_handler(eventid_t id) {
+
+  (void)id;
+  chprintf((BaseSequentialStream*)&SD1, "Shell Died\n\r");
+
+  if (shelltp1 && chThdTerminatedX(shelltp1)) {
+    chThdWait(shelltp1);
+    chprintf((BaseSequentialStream*)&SD1, "Restarting from termination handler\n\r");
+    chThdSleepMilliseconds(100);
+    shelltp1 = shellCreate(&shell_cfg1, sizeof(waShell), NORMALPRIO);
+  }
+}
+
+static evhandler_t fhandlers[] = {
+  termination_handler
+};
+
+
+int main(void) {
+  event_listener_t tel;
+  chSysInit();
+  halInit();
+  // Setup pins of our MCU as analog inputs
+  palSetPadMode(GPIOC, 0, PAL_MODE_INPUT_ANALOG); // this is 0 pin _INPUT_ANALOG
+  palSetPadMode(GPIOC, 1, PAL_MODE_INPUT_ANALOG); // this is 15th pin
+
+  // Following 3 functions use previously created configuration
+  // to initialize ADC block, start ADC block and start conversion.
+  // &ADCD1 is pointer to ADC driver structure, defined in the depths of HAL.
+  // Other arguments defined ourself earlier.
+  //adcInit();
+
+  adcStart(&ADCD1, &adccfg);
+  adcStartConversion(&ADCD1, &adcgrpcfg, &samples_buf[0], ADC_BUF_DEPTH);
+
+
+  sdStart(&SD1, NULL);
+  palSetPadMode(GPIOC, 4, PAL_MODE_ALTERNATE(7));
+  palSetPadMode(GPIOC, 5, PAL_MODE_ALTERNATE(7));
+  shellInit();
+  gptStart(&GPTD1, &gpt_adc_config);
+  //gptStartContinuous(&GPTD1, 227);
+  gptStartContinuous(&GPTD1, (int) 100000);
+
+  //chEvtRegister(&shell_terminated, &tel, 0);
+  // Thats all. Now your conversion run in background without assistance.
+  shelltp1 = shellCreate(&shell_cfg1, sizeof(waShell), NORMALPRIO);
+  chThdCreateStatic(waCounterThread, sizeof(waCounterThread), NORMALPRIO+1, counterThread, NULL);
+  chThdCreateStatic(waPrinterThread, sizeof(waPrinterThread), NORMALPRIO+1, printerThread, NULL);
+    
+
+  chprintf((BaseSequentialStream*)&SD1,"\n\r Up and running \n\r");
+  while (TRUE) {
+    chEvtDispatch(fhandlers, chEvtWaitOne(ALL_EVENTS));
+  }
+  return 0;
+}
