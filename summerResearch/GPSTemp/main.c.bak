@@ -1,0 +1,254 @@
+/*
+    ChibiOS - Copyright (C) 2006-2014 Giovanni Di Sirio
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+*/
+
+#include "ch.h"
+#include "hal.h"
+#include "test.h"
+#include "shell.h" 
+#include "chprintf.h"
+#include "rtc.h"
+#include <chstreams.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <math.h>
+#include <time.h>
+#define UNUSED(x) (void)(x)
+int delay_count = 0;
+
+static THD_WORKING_AREA(waShell,2048);
+
+static thread_t *shelltp1;
+
+/* Thread that blinks North LED as an "alive" indicator */
+static THD_WORKING_AREA(waCounterThread,128);
+static THD_FUNCTION(counterThread,arg) {
+  UNUSED(arg);
+  while (TRUE) {
+    palSetPad(GPIOE, GPIOE_LED3_RED);
+    chThdSleepMilliseconds(500);
+    palClearPad(GPIOE, GPIOE_LED3_RED);
+    chThdSleepMilliseconds(500);
+  }
+}
+
+/* This is temporary callback funtion, it basically wastes time and blinks
+ * GPT2 callback.
+ * Every time the timer fires send a new sample to the output port
+ */
+static void sample_callback(GPTDriver *gptp)
+{
+
+  /* define the pattern index, dataset and datasize size */
+  static uint16_t pattern_index = 0;
+    static uint8_t pattern_data[] =
+      {
+	0x00,0x00,0x00,0x00,0x00,0x3a,0x00,0x00,
+	0x30,0x00,0x30,0x00,0x3e,0x14,0x3e,0x14,
+	0x1a,0x3b,0x16,0x00,0x24,0x08,0x12,0x00,
+	0x14,0x2a,0x14,0x02,0x00,0x30,0x00,0x00,
+	0x00,0x1e,0x21,0x00,0x21,0x1e,0x00,0x00,
+	0x2a,0x1c,0x2a,0x00,0x08,0x3e,0x08,0x00,
+	0x01,0x02,0x00,0x00,0x08,0x08,0x08,0x00,
+	0x00,0x02,0x00,0x00,0x06,0x08,0x30,0x00,
+	0x1c,0x2a,0x1c,0x00,0x12,0x3e,0x02,0x00,
+      };
+#define PATTERN_SIZE sizeof( pattern_data )
+
+    /* define the output port -- yea, yea...  this is just an example.... */
+    volatile uint8_t port;
+    volatile uint8_t port2;
+
+    //you shouldn't be able to see the flicker because it goes fast
+    palSetPad(GPIOE, GPIOE_LED9_BLUE);   // Turn on the Blue LED
+
+    port = pattern_data[ pattern_index ];
+
+    pattern_index++;
+    if( pattern_index > PATTERN_SIZE )
+      {
+        pattern_index = 0;
+      }
+
+    /* waste some time, otherwise this callback will run so quick */
+    /*   you won't be able to see it.  We have to do something    */
+    /*   or our loop could be optimized out */
+    for( delay_count = 0; delay_count < 100000; delay_count++ )
+      {
+        port2 = (uint8_t)delay_count % 256;
+      }
+
+    chprintf((BaseSequentialStream*)&SD1, "Restarting from termination handler\n\r");
+    /* turn off the port to indicate how long this code took to execute */
+    /*   yep, still need that logic sniffer to see it */
+    palClearPad(GPIOE, GPIOE_LED9_BLUE);  // Turn off the Blue LED
+}
+
+
+/*
+ * GPT2 configuration.
+ *   This configuration block defines a time with a 200kHz counting clock,
+ *   and our callback function named sample_output_callback.  When we start
+ *   the timer we will specify the numbers of clock ticks we want to elapse
+ *   between callback execution.
+ *
+ *   NOTE:  Be sure the execution of the callback is done before calling it
+ *            again.  Otherwise, strange things may happen....
+ *          Generally, you will want to define the callback function above
+ *            this or the compiler will complain about it being undefined.
+ */
+
+static GPTConfig gpt2cfg =
+  {
+    200000,                    /* timer clock, time in Hz.*/
+    sample_callback     /* Timer callback.*/
+  };
+
+
+static void cmd_data(BaseSequentialStream *chp, int argc, char *argv[]){
+  int32_t i;
+  (void)argv;
+
+  /* print whatever arguments*/
+  for (i=0;i<argc;i++) {
+    chprintf(chp, "hallo \n\r");
+  }
+}
+
+/*This should be telling time but it's not telling the right time */
+static void cmd_time(BaseSequentialStream *chp, int argc, char *argv[]){
+  RTCDateTime time;
+  struct tm ltime;
+  /* if (argc < 2){ */
+  /* chprintf((BaseSequentialStream*)&SD1,"Too many arguments\n\r"); */
+  /* } */
+  /* else if (argc == 0) { */
+  /* chprintf((BaseSequentialStream*)&SD1,"Not enough argument\n\r"); */
+  /* } */
+  /* else{ */
+    
+  /* } */
+  /* Attempting to get time here...*/
+  rtcGetTime(&RTCD1, &time);
+  chprintf((BaseSequentialStream*)&SD1,"\n\r");
+  rtcConvertDateTimeToStructTm(&time,&ltime, NULL);
+  chprintf((BaseSequentialStream*)&SD1,"%s\n\r",asctime(&ltime));
+}
+
+void cmd_rtcSet(BaseSequentialStream *chp, int argc, char *argv[]) {
+  //  int32_t i;
+  RTCDateTime time;
+  struct tm * ltime;
+  time_t epoch;
+
+  (void)argv;
+  (void)chp;
+  (void)argc;
+
+  epoch = (time_t) atoi(argv[0]);
+  epoch -= 5 * 3600; // Convert from UTC time to EDT time.
+  ltime = localtime(&epoch);
+  rtcConvertStructTmToDateTime(ltime, 0, &time);
+  rtcSetTime(&RTCD1, &time);
+}
+
+/*Commands */
+static const ShellCommand commands[] = {
+  {"read_data", cmd_data},
+  {"time", cmd_time},
+  {"settime", cmd_rtcSet},
+  {NULL, NULL}
+};
+
+/*Shell*/
+static const ShellConfig shell_cfg1 = {
+  (BaseSequentialStream *)&SD1,
+  commands
+};
+
+static void termination_handler(eventid_t id) {
+
+  (void)id;
+  chprintf((BaseSequentialStream*)&SD1, "Shell Died\n\r");
+
+  if (shelltp1 && chThdTerminatedX(shelltp1)) {
+    chThdWait(shelltp1);
+    chprintf((BaseSequentialStream*)&SD1, "Restarting from termination handler\n\r");
+    chThdSleepMilliseconds(100);
+    shelltp1 = shellCreate(&shell_cfg1, sizeof(waShell), NORMALPRIO);
+  }
+}
+
+static evhandler_t fhandlers[] = {
+  termination_handler
+};
+
+/*
+ * Application entry point.
+ */
+
+int main(void) {
+  event_listener_t tel;
+
+  /*
+   * System initializations.
+   * - HAL initialization, this also initializes the configured device drivers
+   *   and performs the board-specific initializations.
+   * - Kernel initialization, the main() function becomes a thread and the
+   *   RTOS is active.
+   */
+  halInit();
+  chSysInit();
+
+  /*This is suppose to start the callbacks, but it seems to be breaking stuff*/
+  //  gptStart(&GPTD1, &gpt2cfg);
+  //gptStartContinuous(&GPTD1, 25); 
+
+  /*
+   * Activates the serial driver 1 using the driver default configuration.
+   * PC4(RX) and PC5(TX). The default baud rate is 9600.
+   * PC10(RX) and PC9(TX). The default baud rate is 9600.
+   */
+  sdStart(&SD2, NULL);
+  palSetPadMode(GPIOA, 2, PAL_MODE_ALTERNATE(7));
+  palSetPadMode(GPIOA, 3, PAL_MODE_ALTERNATE(7));
+
+  sdStart(&SD1, NULL);
+  palSetPadMode(GPIOC, 4, PAL_MODE_ALTERNATE(7));
+  palSetPadMode(GPIOC, 5, PAL_MODE_ALTERNATE(7));
+
+
+  chprintf((BaseSequentialStream*)&SD1, "\n\rUp and Running SD1\n\r");
+  //  chprintf((BaseSequentialStream*)&SD2, "\n\rUp and Running SD2\n\r");
+
+  /* Initialize the command shell */ 
+  shellInit();
+
+  /* 
+   *  setup to listen for the shell_terminated event. This setup will be stored in the tel  * event listner structure in item 0
+  */
+  chEvtRegister(&shell_terminated, &tel, 0);
+
+  shelltp1 = shellCreate(&shell_cfg1, sizeof(waShell), NORMALPRIO);
+  chThdCreateStatic(waCounterThread, sizeof(waCounterThread), NORMALPRIO+1, counterThread, NULL);
+
+  while (TRUE) {
+    chEvtDispatch(fhandlers, chEvtWaitOne(ALL_EVENTS));
+  }
+	   }
+
+

@@ -1,0 +1,246 @@
+//
+//    LED Panel - Main program and associated methods.
+//
+//#include "spi.h"
+#include <stm32f30x.h>
+#include <stm32f30x_spi.h>
+#include <stm32f30x_rcc.h>
+#include <stm32f30x_gpio.h>
+#include <stm32f30x_dma.h>
+#include <f3d_led.h>
+#include <f3d_uart.h>
+#include <stdio.h>
+//#include <f3d_lcd_sd.h>
+//#include <f3d_rtc.h>
+//#include <f3d_systick.h>
+#include <f3d_lcd_dma.h>
+//#include <f3d_gyro.h>
+//
+//    Initialise the system.
+//
+
+//
+//    Main program loop.
+//
+
+#define SPI_SLOW (uint16_t) SPI_BaudRatePrescaler_64
+#define SPI_MEDIUM (uint16_t) SPI_BaudRatePrescaler_8
+#define SPI_FAST (uint16_t) SPI_BaudRatePrescaler_2
+
+uint16_t SPIReceivedValue[2];
+uint16_t SPITransmittedValue[2] = {0xFF00,0x00FF};
+uint8_t SPI_TX_MAX[10000];
+
+uint8_t txbuf [4], rxbuf [4], txbuf2, rxbuf2;
+uint16_t txbuf216[16], txbuf16 [16], rxbuf16 [16];
+uint8_t spiTxBuff[10] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x10};
+uint8_t spiRxBuff[10] ={0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+
+//initializes clocks for GPIO, SPI, and DMA
+void clock_init(){
+  //GPIO clocks 
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOE, ENABLE);
+
+  //SPI clocks
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_SPI1, ENABLE); //SPI1
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_SPI2, ENABLE);//SPI2
+
+  //DMA clock 
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
+}
+
+
+void pin_init(){
+
+  GPIO_InitTypeDef GPIO_InitStructure;
+  
+  //blink north LED
+  GPIO_StructInit(&GPIO_InitStructure);
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
+  GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+  GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+
+  GPIO_Init(GPIOE,&GPIO_InitStructure);
+
+  //**************SPI1 pin init (tx master)*****************
+  //CS PE3
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
+  GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+  GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  GPIO_Init(GPIOE,&GPIO_InitStructure);
+
+  GPIO_SetBits(GPIOE, GPIO_Pin_3); //set CS pin high
+
+  //SCK PA5, MOSI PA7
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_5 | GPIO_Pin_7;
+  GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
+  GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+  GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  GPIO_Init(GPIOA,&GPIO_InitStructure);
+
+  //alt functions
+  GPIO_PinAFConfig(GPIOA,5,GPIO_AF_5);
+  GPIO_PinAFConfig(GPIOA,7,GPIO_AF_5);
+
+  
+  //****************SPI2 pin init (rx slave)******************************
+
+  //RX SPI2 (soft nss)
+  //SCK PB13
+  //MOSI PB15
+  GPIO_InitStructure.GPIO_Pin = GPIO_Pin_13 | GPIO_Pin_15;
+  GPIO_Init(GPIOB,&GPIO_InitStructure);
+
+
+  //alt functions
+  GPIO_PinAFConfig(GPIOB,13,GPIO_AF_5);
+  GPIO_PinAFConfig(GPIOB,15,GPIO_AF_5);
+
+ 
+}
+
+void spi_init(){
+  //*********************SPI1 init (master) ************************
+
+  SPI_InitTypeDef SPI_InitStructure;
+  SPI_StructInit(&SPI_InitStructure);
+
+  SPI_I2S_DeInit(SPI1);
+  SPI_InitStructure.SPI_Direction = SPI_Direction_1Line_Tx;
+  SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
+  SPI_InitStructure.SPI_CPOL = SPI_CPOL_Low;
+  SPI_InitStructure.SPI_CPHA = SPI_CPHA_1Edge;
+  SPI_InitStructure.SPI_NSS = SPI_NSS_Soft;
+  SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_8;
+  SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
+  SPI_InitStructure.SPI_CRCPolynomial = 7;
+  SPI_InitStructure.SPI_Mode = SPI_Mode_Master;
+
+  SPI_Init(SPI1, &SPI_InitStructure);
+  SPI_RxFIFOThresholdConfig(SPI1, SPI_RxFIFOThreshold_QF);
+  SPI_Cmd(SPI1, ENABLE);
+
+  //*******************SPI2 init (slave)*****************
+  //SPI_InitTypeDef SPI_InitStructure;
+  
+  SPI_I2S_DeInit(SPI2);
+  
+  SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_RxOnly;
+  SPI_InitStructure.SPI_Mode = SPI_Mode_Slave;
+  
+  SPI_Init(SPI2, &SPI_InitStructure);
+  SPI_RxFIFOThresholdConfig(SPI2, SPI_RxFIFOThreshold_QF);
+  SPI_Cmd(SPI2, ENABLE);
+
+  //****************************************************
+
+}
+
+void dma_init(){
+  DMA_InitTypeDef DMA_InitStructure;   
+
+  DMA_Channel_TypeDef *rxChan = DMA1_Channel4;
+  const uint32_t dmaflag = DMA1_FLAG_TC2;
+  DMA_DeInit(rxChan);
+  DMA_StructInit(&DMA_InitStructure);
+
+  //SPI2 DMA
+  DMA_InitStructure.DMA_PeripheralBaseAddr  = (uint32_t) (&(SPI2->DR));
+  DMA_InitStructure.DMA_PeripheralDataSize  = DMA_PeripheralDataSize_Byte;
+  DMA_InitStructure.DMA_PeripheralInc  = DMA_PeripheralInc_Disable;
+  DMA_InitStructure.DMA_MemoryDataSize  = DMA_MemoryDataSize_Byte;
+  DMA_InitStructure.DMA_BufferSize  = sizeof(SPI_TX_MAX);
+  DMA_InitStructure.DMA_Mode  = DMA_Mode_Normal;
+  DMA_InitStructure.DMA_Priority  = DMA_Priority_High;
+  DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
+  DMA_InitStructure.DMA_MemoryBaseAddr  = (uint32_t) rxbuf;
+  DMA_InitStructure.DMA_MemoryInc  = DMA_MemoryInc_Enable;
+
+  DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;
+  DMA_Init(rxChan, &DMA_InitStructure); 
+  DMA_Cmd(rxChan, ENABLE);
+  SPI_I2S_DMACmd(SPI2, SPI_I2S_DMAReq_Rx, ENABLE);
+  
+}
+
+
+void SPI1_Write(uint8_t *txBuff,int length)
+{
+  //  dma_init();
+  DMA_Cmd(DMA2_Channel3, ENABLE);
+  SPI_I2S_DMACmd (SPI1 , SPI_I2S_DMAReq_Tx , ENABLE ); 
+}
+
+void main ()
+{
+  setvbuf(stdin, NULL, _IONBF, 0);
+  setvbuf(stdout, NULL, _IONBF, 0);
+  setvbuf(stderr, NULL, _IONBF, 0);
+  
+  int i =0, j=0;
+  f3d_led_init();
+  f3d_led_all_off();
+  /* f3d_rtc_init(); */
+  /* f3d_timer2_init(); */
+  /* f3d_systick_init(); */
+
+ 
+  clock_init();
+  pin_init();  
+  spi_init();
+  f3d_uart_init();
+  //dma_init();
+  
+ 
+  int counter=0;
+  while(1){    
+   
+    //sending
+    GPIO_WriteBit(GPIOE, GPIO_Pin_3, 0);
+    SPI_NSSInternalSoftwareConfig(SPI2, SPI_NSSInternalSoft_Reset);
+    //dma_init();
+    for(i=0;i<10;i++){
+      SPI_SendData8(SPI1, i);
+    }
+    spiReadWrite(SPI2, rxbuf, txbuf, 8, SPI_SLOW);
+    SPI_NSSInternalSoftwareConfig(SPI2, SPI_NSSInternalSoft_Set);
+    GPIO_WriteBit(GPIOE, GPIO_Pin_3, 1);
+   
+    for(j=0;j<4;j++){
+      printf("bullshit: %x \n", rxbuf[j]);
+    }
+    printf("status: %x \n",(SPI_I2S_GetFlagStatus(SPI2, SPI_I2S_FLAG_RXNE)));
+    
+    /* //receiving  */
+    /* SPI_NSSInternalSoftwareConfig(SPI2, SPI_NSSInternalSoft_Reset); */
+    /* //spiRead(SPI2,rxbuf, 4, SPI_SLOW); */
+    /* // max = SPI_ReceiveData8(SPI2); */
+    /* //SPI_ReceiveData8(SPI2); */
+
+    /* // spiReadWrite16(SPI2, txbuf16, txbuf216, 4, SPI_SLOW); */
+    
+    /* for(j=0; j<16; j++) { */
+    /*   if(txbuf16[j] != txbuf216[j]) */
+    /* 	f3d_led_all_on(); */
+    /* } */
+
+    /* SPI_NSSInternalSoftwareConfig(SPI2, SPI_NSSInternalSoft_Set); */
+    
+
+  }
+}
+
+
+#ifdef USE_FULL_ASSERT
+void assert_failed(uint8_t* file, uint32_t line) {
+/* Infinite loop */
+/* Use GDB to find out why we're here */
+  while (1);
+}
+#endif
